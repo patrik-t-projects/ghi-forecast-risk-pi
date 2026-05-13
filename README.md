@@ -1,6 +1,6 @@
 # PV Forecast Risk on Raspberry Pi
 
-This project downloads weather and PV forecast data, estimates PV forecast uncertainty, builds a forecast risk report, and emails the generated HTML report from a Raspberry Pi.
+This project downloads historical and forecast GHI data (model based and actual measured data), estimates GHI forecast error, builds a forecast risk report, and emails the generated HTML reportf, all autoated rom a Raspberry Pi.
 
 ## What the Pipeline Does
 
