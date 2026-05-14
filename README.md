@@ -8,7 +8,7 @@ This project downloads historical and forecast GHI data (model based and actual 
 2. Gets newest data from Open-Meteo ensemble and previous-run forecast data (https://open-meteo.com/en/docs).
 3. Calculates GHI forecast error.
 4. Fits a risk model on historic data of GHI forecast data using ensemble model runs etc. to predict the GHI gorecast risk.
-5. Builds an interactive HTML report (example included here).
+5. Builds an interactive HTML report (example figure: https://patrik-t-projects.github.io/ghi-forecast-risk-pi/GHI_forecast_risk_example.html).
 6. Sends the report by email.
 
 The daily scheduler in `main.py` waits for 08:00 Europe/Zurich time and runs the full pipeline once per day.
