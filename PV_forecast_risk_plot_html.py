@@ -28,6 +28,7 @@ TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 
 DAILY_PREDICTION_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_daily_predictions_{MODEL}.csv"
 DAILY_PERFORMANCE_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_daily_performance_{MODEL}.csv"
+HOURLY_PERFORMANCE_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_hourly_performance_{MODEL}.csv"
 
 # =========================
 
@@ -1340,51 +1341,62 @@ imbalance_figure = {
 
 
 # ============================================================
-# Daily historical risk-score fit + scatterplot
+# Hourly historical fitted-risk scatterplot + performance
 # ============================================================
-# Historical day-0 forecast error
-daily_error_col = f"MeteoSwiss - {MODEL}_d0"
-daily_abs_error_col = f"{daily_error_col} daily abs error"
 
-df_daily_source = df_features_hist.copy()
-df_daily_source["Date"] = df_daily_source["Datetime UTC"].dt.floor("D")
+hourly_error_col = f"MeteoSwiss - {MODEL}_d0"
+hourly_abs_error_col = f"{hourly_error_col} hourly abs error"
+hourly_output_col = fit_result["output_col"]
+yesterday_date = today_start_utc - pd.Timedelta(days=1)
+forecast_run_date = today_start_utc.strftime("%Y-%m-%d")
 
-# Make sure forecast error exists
-if daily_error_col not in df_daily_source.columns:
-    df_daily_source = df_daily_source.merge(df_rad_hist_error[["Datetime UTC", daily_error_col]], on="Datetime UTC", how="left")
+tmp_hourly = plot_context["df_plot"][["Datetime UTC", hourly_error_col, hourly_output_col]].dropna().copy()
+tmp_hourly = tmp_hourly[tmp_hourly[hourly_output_col] != 0].copy()
+tmp_hourly[hourly_abs_error_col] = tmp_hourly[hourly_error_col].abs()
 
-# Absolute hourly error, then daily sum
-df_daily_source[daily_abs_error_col] = df_daily_source[daily_error_col].abs()
+hourly_x_error = tmp_hourly[hourly_abs_error_col]
+hourly_y_risk = tmp_hourly[hourly_output_col].abs()
 
-# Daily aggregate:
-# - forecast error: summed absolute error
-# - risk features: summed absolute feature values
-daily_feature_cols = []
+if len(tmp_hourly) >= 3 and hourly_x_error.nunique() > 1 and hourly_y_risk.nunique() > 1:
+    hourly_kendall_tau = hourly_x_error.corr(hourly_y_risk, method="kendall")
+else:
+    hourly_kendall_tau = np.nan
 
-for col in feature_info["feature_cols"]:
-    daily_col = f"{col} daily"
-    df_daily_source[daily_col] = df_daily_source[col].abs()
-    daily_feature_cols.append(daily_col)
+hourly_kendall_tau_label = f"{100 * hourly_kendall_tau:.1f}%" if np.isfinite(hourly_kendall_tau) else "n/a"
 
-df_features_daily_hist = df_daily_source.groupby("Date", as_index=False)[[daily_abs_error_col] + daily_feature_cols].sum(min_count=1)
-# Rename Date to Datetime UTC so fit_risk_score_from_features remains compatible
-df_features_daily_hist = df_features_daily_hist.rename(columns={"Date": "Datetime UTC"})
-# Drop invalid rows
-df_features_daily_hist = df_features_daily_hist.dropna(subset=[daily_abs_error_col] + daily_feature_cols).copy()
+tmp_hourly["Datetime UTC"] = pd.to_datetime(tmp_hourly["Datetime UTC"], utc=True)
+tmp_hourly["is_yesterday"] = tmp_hourly["Datetime UTC"].dt.floor("D") == yesterday_date
+tmp_hourly["Day"] = tmp_hourly["Datetime UTC"].apply(english_day_label)
+tmp_hourly["Time UTC"] = tmp_hourly["Datetime UTC"].dt.strftime("%H:%M")
+tmp_hourly["Risk score"] = tmp_hourly[hourly_output_col].map(lambda v: f"{v:.3f}")
+tmp_hourly["Forecast error"] = tmp_hourly[hourly_abs_error_col].map(lambda v: f"{v:.3f}")
 
-# =========================
-# Fit daily risk score separately
-# =========================
-fit_result_daily, plot_context_daily = fit_risk_score_from_features(
-    df_features=df_features_daily_hist,
-    feature_cols=daily_feature_cols,
-    metric_cols=[daily_abs_error_col],
+hourly_y_max = float(hourly_y_risk.max()) if not hourly_y_risk.empty else 1.0
+
+df_rad_pred_hist = df_rad[(df_rad["Datetime UTC"] >= start_dt_hist) & (df_rad["Datetime UTC"] < yesterday_start_utc)].copy()
+df_metrics_pred_hist = df_metrics[(df_metrics["Datetime UTC"] >= start_dt_hist) & (df_metrics["Datetime UTC"] < yesterday_start_utc)].copy()
+df_metrics_yesterday = df_metrics[(df_metrics["Datetime UTC"] >= yesterday_start_utc) & (df_metrics["Datetime UTC"] < today_start_utc)].copy()
+
+df_features_pred_hist, feature_info_pred = build_risk_feature_dataframe(
+    df_rad=df_rad_pred_hist,
+    df_metrics=df_metrics_pred_hist,
     model=MODEL,
     start_date=start_dt_hist.strftime("%Y-%m-%d"),
-    end_date=end_dt_hist.strftime("%Y-%m-%d"),
+    end_date=yesterday_start_utc.strftime("%Y-%m-%d"),
     ghi_threshold=GHI_threshold,
+    target_horizons=(0,),
+)
+
+fit_result_pred, _ = fit_risk_score_from_features(
+    df_features=df_features_pred_hist,
+    feature_cols=feature_info_pred["feature_cols"],
+    metric_cols=feature_info_pred["metric_cols"],
+    model=feature_info_pred["model"],
+    start_date=feature_info_pred["start_date"],
+    end_date=feature_info_pred["end_date"],
+    ghi_threshold=feature_info_pred["ghi_threshold"],
     figsize=FIGSIZE,
-    horizon_colors={daily_abs_error_col: elcom_colors["green"]},
+    horizon_colors=feature_info_pred["horizon_colors"],
     use_rank_features=True,
     nonnegative_weights=True,
     verbose=True,
@@ -1392,304 +1404,215 @@ fit_result_daily, plot_context_daily = fit_risk_score_from_features(
     top_quantile=0.9,
 )
 
-# =========================
-# Apply fitted daily model
-# =========================
-daily_output_col = fit_result_daily["output_col"]
-daily_model_info = fit_result_daily["hourly_model_info"]
+df_features_yesterday_pred, _ = build_risk_feature_dataframe(
+    df_rad=df_rad_yesterday,
+    df_metrics=df_metrics_yesterday,
+    model=MODEL,
+    start_date=yesterday_start_utc.strftime("%Y-%m-%d"),
+    end_date=today_start_utc.strftime("%Y-%m-%d"),
+    ghi_threshold=GHI_threshold,
+    target_horizons=(0,),
+)
 
-X_daily = df_features_daily_hist[daily_feature_cols].copy()
+df_rad_pred_hist_error = df_rad_pred_hist.copy()
+df_rad_pred_hist_error[hourly_error_col] = (
+    df_rad_pred_hist_error["MeteoSwiss stations"] - df_rad_pred_hist_error[f"{MODEL} prev day 0"]
+)
 
-if fit_result_daily.get("use_rank_features", False):
-    X_daily = X_daily.rank(method="average", pct=True)
+df_features_yesterday_pred = compute_future_quantile_error_band(
+    df_error_hist=df_rad_pred_hist_error,
+    df_features_hist=df_features_pred_hist,
+    df_features_future=df_features_yesterday_pred,
+    fit_result=fit_result_pred,
+    error_col=hourly_error_col,
+    risk_window=risk_window,
+    quantile=quantile,
+    min_samples=min_samples,
+    smooth=True,
+    enforce_monotonic=True,
+)
 
-daily_weights = np.asarray(daily_model_info["weights"], dtype=float)
+pred_model_info = fit_result_pred["hourly_model_info"]
+pred_feature_cols = fit_result_pred["feature_cols"]
+pred_weights = np.asarray(pred_model_info["weights"], dtype=float)
 
-df_features_daily_hist[daily_output_col] = X_daily.values @ daily_weights
+X_pred_hist = df_features_pred_hist[pred_feature_cols].copy()
 
-if "intercept" in daily_model_info:
-    df_features_daily_hist[daily_output_col] += float(daily_model_info["intercept"])
+if fit_result_pred.get("use_rank_features", False):
+    X_pred_hist = X_pred_hist.rank(method="average", pct=True)
 
-# ============================================================
-# Future daily risk scores + calibrated q95 error estimate
-# ============================================================
+pred_hist_raw_risk = X_pred_hist.values @ pred_weights
 
-# Build future daily feature dataframe from df_features_future
-df_daily_future_source = df_features_future.copy()
-df_daily_future_source["Date"] = df_daily_future_source["Datetime UTC"].dt.floor("D")
+if "intercept" in pred_model_info:
+    pred_hist_raw_risk += float(pred_model_info["intercept"])
 
-daily_feature_cols_future = []
+pred_hist_raw_risk = np.sort(pred_hist_raw_risk[np.isfinite(pred_hist_raw_risk)])
 
-for hist_daily_col in daily_feature_cols:
-    base_col = hist_daily_col.replace(" daily", "")
-    future_daily_col = hist_daily_col
+X_yesterday_pred = df_features_yesterday_pred[pred_feature_cols].copy()
 
-    df_daily_future_source[future_daily_col] = df_daily_future_source[base_col].abs()
-    daily_feature_cols_future.append(future_daily_col)
+if fit_result_pred.get("use_rank_features", False):
+    X_yesterday_ranked = X_yesterday_pred.copy()
 
-df_features_daily_future = df_daily_future_source.groupby("Date", as_index=False)[daily_feature_cols_future].sum(min_count=1)
+    for col in pred_feature_cols:
+        hist_values = df_features_pred_hist[col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+        hist_values = np.sort(hist_values)
+        future_values = X_yesterday_pred[col].to_numpy(dtype=float)
 
-df_features_daily_future = df_features_daily_future.rename(columns={"Date": "Datetime UTC"})
-df_features_daily_future = df_features_daily_future.dropna(subset=daily_feature_cols_future).copy()
-
-# Apply fitted daily model to future daily features
-X_daily_future = df_features_daily_future[daily_feature_cols].copy()
-
-if fit_result_daily.get("use_rank_features", False):
-    # Important: rank future values relative to historical daily distribution
-    X_ranked = X_daily_future.copy()
-
-    for col in daily_feature_cols:
-        hist_values = df_features_daily_hist[col].dropna().to_numpy()
-        future_values = X_daily_future[col].to_numpy()
-
-        # Percentile rank of future value within historical distribution
-        X_ranked[col] = [
-            np.mean(hist_values <= val) if len(hist_values) > 0 else np.nan
+        X_yesterday_ranked[col] = [
+            np.searchsorted(hist_values, val, side="right") / len(hist_values)
+            if len(hist_values) > 0 and np.isfinite(val)
+            else np.nan
             for val in future_values
         ]
 
-    X_daily_future = X_ranked
+    X_yesterday_pred = X_yesterday_ranked
 
-daily_weights = np.asarray(daily_model_info["weights"], dtype=float)
+yesterday_raw_risk = X_yesterday_pred.values @ pred_weights
 
-df_features_daily_future[daily_output_col] = X_daily_future.values @ daily_weights
+if "intercept" in pred_model_info:
+    yesterday_raw_risk += float(pred_model_info["intercept"])
 
-if "intercept" in daily_model_info:
-    df_features_daily_future[daily_output_col] += float(daily_model_info["intercept"])
-
-# Optional: keep risk score in [0, 1]
-df_features_daily_future[daily_output_col] = df_features_daily_future[daily_output_col].clip(0, 1)
-
-# ============================================================
-# Calibrate future daily q95 error from historical daily data
-# ============================================================
-
-hist_daily_risk = df_features_daily_hist[daily_output_col].to_numpy(dtype=float)
-hist_daily_error = df_features_daily_hist[daily_abs_error_col].abs().to_numpy(dtype=float)
-future_daily_risk = df_features_daily_future[daily_output_col].to_numpy(dtype=float)
-
-future_daily_q95_left = []
-future_daily_q95_mid = []
-future_daily_q95_right = []
-future_daily_q95_xerr = []
-
-for r_star in future_daily_risk:
-
-    if np.isnan(r_star):
-        future_daily_q95_left.append(np.nan)
-        future_daily_q95_mid.append(np.nan)
-        future_daily_q95_right.append(np.nan)
-        future_daily_q95_xerr.append(np.nan)
-        continue
-
-    mask = np.abs(hist_daily_risk - r_star) <= risk_window
-
-    if mask.sum() < min_samples:
-        nearest_idx = np.argsort(np.abs(hist_daily_risk - r_star))[:min_samples]
-        local_errors = hist_daily_error[nearest_idx]
-    else:
-        local_errors = hist_daily_error[mask]
-
-    q95_left = np.quantile(local_errors, 0.025)
-    q95_right = np.quantile(local_errors, 0.975)
-    q95_mid = 0.5 * (q95_left + q95_right)
-    q95_xerr = 0.5 * (q95_right - q95_left)
-
-    future_daily_q95_left.append(q95_left)
-    future_daily_q95_mid.append(q95_mid)
-    future_daily_q95_right.append(q95_right)
-    future_daily_q95_xerr.append(q95_xerr)
-
-df_features_daily_future["daily_error_q95_left"] = future_daily_q95_left
-df_features_daily_future["daily_error_q95_mid"] = future_daily_q95_mid
-df_features_daily_future["daily_error_q95_right"] = future_daily_q95_right
-df_features_daily_future["daily_error_xerr"] = future_daily_q95_xerr
-
-forecast_run_date = pd.Timestamp.now(tz="UTC").normalize().strftime("%Y-%m-%d")
-
-prediction_rows = []
-
-for _, row in df_features_daily_future.iterrows():
-    prediction_rows.append(
-        {
-            "forecast_run_date": forecast_run_date,
-            "target_date": pd.Timestamp(row["Datetime UTC"]).strftime("%Y-%m-%d"),
-            "model": MODEL,
-            "predicted_risk_score": clean_float(row[daily_output_col]),
-            "daily_error_q95_left": clean_float(row["daily_error_q95_left"]),
-            "daily_error_q95_mid": clean_float(row["daily_error_q95_mid"]),
-            "daily_error_q95_right": clean_float(row["daily_error_q95_right"]),
-        }
-    )
-
-df_daily_prediction_tracking = upsert_tracking_csv(
-    DAILY_PREDICTION_TRACKING_PATH,
-    prediction_rows,
-    key_cols=["forecast_run_date", "target_date", "model"],
-)
-
-
-
-
-
-# ============================================================
-# Scatterplot: historical daily abs error vs fitted daily risk
-# + future calibrated q95 error estimates
-# ============================================================
-
-tmp = df_features_daily_hist[["Datetime UTC", daily_abs_error_col, daily_output_col]].dropna().copy()
-
-x_error = tmp[daily_abs_error_col].abs()
-y_risk = tmp[daily_output_col].abs()
-
-if len(tmp) >= 3 and x_error.nunique() > 1 and y_risk.nunique() > 1:
-    kendall_tau = x_error.corr(y_risk, method="kendall")
+if len(pred_hist_raw_risk) > 0:
+    df_features_yesterday_pred[hourly_output_col] = [
+        100 * np.searchsorted(pred_hist_raw_risk, val, side="right") / len(pred_hist_raw_risk)
+        if np.isfinite(val)
+        else np.nan
+        for val in yesterday_raw_risk
+    ]
 else:
-    kendall_tau = np.nan
+    df_features_yesterday_pred[hourly_output_col] = np.nan
 
-yesterday_date = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=1)
+df_features_yesterday_pred["hourly_error_q95_left"] = 0.0
+df_features_yesterday_pred["hourly_error_q95_right"] = df_features_yesterday_pred["q95_error_band"]
+df_features_yesterday_pred["hourly_error_q95_mid"] = 0.5 * df_features_yesterday_pred["q95_error_band"]
+df_features_yesterday_pred["Day"] = df_features_yesterday_pred["Datetime UTC"].apply(english_day_label)
+df_features_yesterday_pred["Time UTC"] = df_features_yesterday_pred["Datetime UTC"].dt.strftime("%H:%M")
+df_features_yesterday_pred["Risk score"] = df_features_yesterday_pred[hourly_output_col].map(lambda v: f"{v:.3f}")
+df_features_yesterday_pred["q95 range"] = df_features_yesterday_pred["q95_error_band"].map(lambda v: f"0.000 to {v:.3f}")
 
-tmp["Datetime UTC"] = pd.to_datetime(tmp["Datetime UTC"], utc=True)
-tmp["is_yesterday"] = tmp["Datetime UTC"].dt.floor("D") == yesterday_date
-tmp["Day"] = tmp["Datetime UTC"].apply(english_day_label)
-tmp["Risk score"] = tmp[daily_output_col].map(lambda v: f"{v:.3f}")
-tmp["Forecast error"] = tmp[daily_abs_error_col].abs().map(lambda v: f"{v:.3f}")
+yesterday_actual = tmp_hourly.loc[tmp_hourly["is_yesterday"]].copy()
 
-df_features_daily_future["Day"] = df_features_daily_future["Datetime UTC"].apply(english_day_label)
-df_features_daily_future["Risk score"] = df_features_daily_future[daily_output_col].map(lambda v: f"{v:.3f}")
-df_features_daily_future["q95 range"] = df_features_daily_future.apply(
-    lambda row: f"{row['daily_error_q95_left']:.3f} to {row['daily_error_q95_right']:.3f}",
-    axis=1,
-)
+yesterday_y_values = pd.concat(
+    [
+        yesterday_actual[hourly_output_col].abs(),
+        df_features_yesterday_pred[hourly_output_col].abs(),
+    ],
+    ignore_index=True,
+).dropna()
 
-df_yesterday_prediction = load_tracked_yesterday_prediction(
-    path=DAILY_PREDICTION_TRACKING_PATH,
-    model=MODEL,
-    yesterday_date=yesterday_date,
-)
+yesterday_y_max = float(yesterday_y_values.max()) if not yesterday_y_values.empty else 1.0
 
-scatter_traces = [
-    scatter_trace(
-        tmp.loc[~tmp["is_yesterday"]],
-        x_col=daily_abs_error_col,
-        y_col=daily_output_col,
-        name="Historical",
-        color=rgb_to_css(elcom_colors["green"]),
-        hover_columns=["Day", "Risk score", "Forecast error"],
-        size=6,
-    ),
-    scatter_trace(
-        tmp.loc[tmp["is_yesterday"]],
-        x_col=daily_abs_error_col,
-        y_col=daily_output_col,
-        name="Yesterday actual",
-        color=rgb_to_css(elcom_colors["dark_blue"]),
-        hover_columns=["Day", "Risk score", "Forecast error"],
-        size=6,
-    ),
-]
-
-if not df_yesterday_prediction.empty:
-    scatter_traces.append(
+yesterday_hourly_scatter_figure = {
+    "title": f"{MODEL}: Yesterday hourly predicted and actual risk scores",
+    "xType": "linear",
+    "xLabel": "Hourly abs. GHI forecast error",
+    "yLabel": "Hourly fitted risk score",
+    "yRange": [0, clean_float(max(1.0, yesterday_y_max * 1.05))],
+    "traces": [
         error_scatter_trace(
-            df_yesterday_prediction,
-            x_col="daily_error_q95_mid",
-            y_col="predicted_risk_score",
-            x_left_col="daily_error_q95_left",
-            x_right_col="daily_error_q95_right",
+            df_features_yesterday_pred,
+            x_col="hourly_error_q95_mid",
+            y_col=hourly_output_col,
+            x_left_col="hourly_error_q95_left",
+            x_right_col="hourly_error_q95_right",
             name="Yesterday prediction",
             color=rgb_to_css(elcom_colors["orange"]),
-            hover_columns=["Day", "Risk score", "q95 range"],
-            size=7,
-        )
-    )
-
-scatter_traces.append(
-    error_scatter_trace(
-        df_features_daily_future,
-        x_col="daily_error_q95_mid",
-        y_col=daily_output_col,
-        x_left_col="daily_error_q95_left",
-        x_right_col="daily_error_q95_right",
-        name="Future",
-        color=rgb_to_css(elcom_colors["grey"]),
-        hover_columns=["Day", "Risk score", "q95 range"],
-        size=6,
-    )
-)
-
-scatter_figure = {
-    "title": (
-        f"{MODEL}: Daily fitted risk score vs daily abs. forecast error\n"
-        f"Kendall-tau = {kendall_tau:.3f}"
-    ),
-    "xType": "linear",
-    "xLabel": "Daily summed abs. GHI forecast error",
-    "yLabel": "Daily fitted risk score",
-    "yRange": [0, 1],
-    "traces": scatter_traces,
+            hover_columns=["Day", "Time UTC", "Risk score", "q95 range"],
+            size=6,
+        ),
+        scatter_trace(
+            yesterday_actual,
+            x_col=hourly_abs_error_col,
+            y_col=hourly_output_col,
+            name="Yesterday actual",
+            color=rgb_to_css(elcom_colors["dark_blue"]),
+            hover_columns=["Day", "Time UTC", "Risk score", "Forecast error"],
+            size=5,
+        ),
+    ],
 }
 
-current_rank_rmse = rank_rmse_percent(
-    tmp[daily_abs_error_col].abs(),
-    tmp[daily_output_col].abs(),
+hourly_scatter_figure = {
+    "title": (
+        f"{MODEL}: Historical hourly fitted risk score vs hourly abs. forecast error\n"
+        f"Kendall-tau = {hourly_kendall_tau_label}"
+    ),
+    "xType": "linear",
+    "xLabel": "Hourly abs. GHI forecast error",
+    "yLabel": "Hourly fitted risk score",
+    "yRange": [0, clean_float(max(1.0, hourly_y_max * 1.05))],
+    "traces": [
+        scatter_trace(
+            tmp_hourly,
+            x_col=hourly_abs_error_col,
+            y_col=hourly_output_col,
+            name="Historical",
+            color=rgb_to_css(elcom_colors["green"]),
+            hover_columns=["Day", "Time UTC", "Risk score", "Forecast error"],
+            size=4,
+        ),
+    ],
+}
+
+current_hourly_rank_rmse = rank_rmse_percent(
+    tmp_hourly[hourly_abs_error_col],
+    tmp_hourly[hourly_output_col].abs(),
 )
 
-performance_rows = [
+hourly_performance_rows = [
     {
         "run_date": forecast_run_date,
         "model": MODEL,
-        "kendall_tau": clean_float(kendall_tau),
-        "rank_rmse_percent": clean_float(current_rank_rmse),
-        "n_days": int(len(tmp)),
+        "kendall_tau_percent": clean_float(100 * hourly_kendall_tau),
+        "rank_rmse_percent": clean_float(current_hourly_rank_rmse),
+        "n_hours": int(len(tmp_hourly)),
     }
 ]
 
-df_daily_performance_tracking = upsert_tracking_csv(
-    DAILY_PERFORMANCE_TRACKING_PATH,
-    performance_rows,
+df_hourly_performance_tracking = upsert_tracking_csv(
+    HOURLY_PERFORMANCE_TRACKING_PATH,
+    hourly_performance_rows,
     key_cols=["run_date", "model"],
 )
 
-df_daily_model_performance = df_daily_performance_tracking[
-    df_daily_performance_tracking["model"] == MODEL
+df_hourly_model_performance = df_hourly_performance_tracking[
+    df_hourly_performance_tracking["model"] == MODEL
 ].copy()
 
-df_daily_model_performance["Datetime UTC"] = pd.to_datetime(
-    df_daily_model_performance["run_date"],
+df_hourly_model_performance["Datetime UTC"] = pd.to_datetime(
+    df_hourly_model_performance["run_date"],
     utc=True,
 )
 
-df_daily_model_performance = df_daily_model_performance.rename(
+df_hourly_model_performance = df_hourly_model_performance.rename(
     columns={
-        "kendall_tau": "Kendall tau",
+        "kendall_tau_percent": "Kendall tau [%]",
         "rank_rmse_percent": "Rank RMSE [%]",
     }
 )
 
-performance_figure = {
-    "title": f"{MODEL}: Tracked historical daily model performance",
+hourly_performance_figure = {
+    "title": f"{MODEL}: Tracked historical hourly model performance",
     "xType": "date",
     "xTickHours": 24,
     "dayOnlyAtMidnight": True,
     "sharedHover": True,
     "xLabel": "Day",
-    "yLabel": "Kendall-tau score",
+    "yLabel": "Kendall-tau [%]",
     "y2Label": "Rank RMSE [%]",
-    "yRange": [-1, 1],
+    "yRange": [0, 100],
     "y2Range": [0, 100],
     "traces": [
         time_series_trace(
-            df_daily_model_performance,
+            df_hourly_model_performance,
             x_col="Datetime UTC",
-            y_col="Kendall tau",
-            name="Kendall-tau",
+            y_col="Kendall tau [%]",
+            name="Kendall-tau [%]",
             color="rgba(0, 0, 0, 1)",
             marker=True,
         ),
         time_series_trace(
-            df_daily_model_performance,
+            df_hourly_model_performance,
             x_col="Datetime UTC",
             y_col="Rank RMSE [%]",
             name="Rank RMSE [%]",
@@ -1701,8 +1624,13 @@ performance_figure = {
     ],
 }
 
-
-figures = [line_figure, imbalance_figure, scatter_figure, performance_figure]
+figures = [
+    line_figure,
+    imbalance_figure,
+    yesterday_hourly_scatter_figure,
+    hourly_scatter_figure,
+    hourly_performance_figure,
+]
 output_dir = REPORTS_DIR
 output_html = output_dir / f"PV_forecast_risk_{MODEL}_{START_DATE}_to_{END_DATE}.html"
 write_interactive_html_report(

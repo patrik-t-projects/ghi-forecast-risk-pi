@@ -435,7 +435,7 @@ def plot_risk_metric_performance(
                 and y_risk.nunique() > 1
             ):
                 kendall_tau_corr = x_error.corr(y_risk, method="kendall")
-                ax.set_title(f"{risk_col}\nKendall-tau = {kendall_tau_corr:.3f}")
+                ax.set_title(f"{risk_col}\nKendall-tau = {100 * kendall_tau_corr:.1f}%")
             else:
                 ax.set_title(f"{risk_col}\nKendall-tau = n/a")
 
