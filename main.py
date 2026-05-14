@@ -156,24 +156,27 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
+    
     zurich_tz = ZoneInfo("Europe/Zurich")
-    last_run_date = None
+    last_successful_run_date = None
 
     print("Waiting for 08:00 Europe/Zurich time...")
 
     while True:
         now = datetime.now(zurich_tz)
         # print(now.hour, now.minute)
-
-        if now.hour == 8 and now.minute == 0 and last_run_date != now.date():
+        
+        # Start trying from 08:00 onward, once per day until successful
+        if (now.hour >= 8 and last_successful_run_date != now.date()):
             print(f"\nIt is {now.strftime('%Y-%m-%d %H:%M:%S %Z')}. Starting daily run...")
-
+            
             try:
                 run_pipeline()
-                last_run_date = now.date()
-                print("\nDaily run finished.")
+                # Only mark the day as done if the full pipeline succeeded
+                last_successful_run_date = now.date()
+                print("\nDaily run finished successfully.")
             except Exception as e:
-                last_run_date = now.date()
                 print(f"\nDaily run failed: {e}")
+                print("Will retry in 30 seconds...")
 
         time.sleep(30)
