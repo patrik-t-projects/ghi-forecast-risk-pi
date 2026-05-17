@@ -7,7 +7,7 @@ This project downloads weather and PV forecast data, estimates PV forecast uncer
 1. Updates MeteoSwiss radiation station data.
 2. Updates Open-Meteo ensemble and previous-run forecast data.
 3. Calculates PV forecast uncertainty.
-4. Builds an interactive HTML risk report.
+4. Builds an interactive HTML risk report (example can be found here: https://patrik-t-projects.github.io/ghi-forecast-risk-pi/GHI_forecast_risk_example.html)
 5. Sends the report by email.
 
 The daily scheduler in `main.py` waits for 08:00 Europe/Zurich time and runs the full pipeline once per day.
