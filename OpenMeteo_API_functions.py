@@ -38,6 +38,7 @@ VPN_RECENT_COUNTRY_LIMIT = 3   # do not reuse last 3 countries
 def run_command(command):
     result = subprocess.run(
         command,
+        shell=True,
         text=True,
         capture_output=True,
     )
@@ -61,7 +62,7 @@ def save_vpn_history(history):
 
 
 def get_nordvpn_status():
-    stdout, stderr, code = run_command(["nordvpn", "status"])
+    stdout, stderr, code = run_command("nordvpn status")
     return stdout
 
 
@@ -86,7 +87,7 @@ def change_vpn_country():
 
     print(f"\nChanging NordVPN location to: {new_country}")
 
-    stdout, stderr, code = run_command(["nordvpn", "connect", new_country])
+    stdout, stderr, code = run_command(f'nordvpn connect "{new_country}"')
 
     print(stdout)
     if stderr:
@@ -412,7 +413,7 @@ def compress_ensemble_runs(df: pd.DataFrame) -> pd.DataFrame:
         out["shortwave_radiation_icon_ch2_ens_min"] = df[icon_ch2_cols].min(axis=1)
         out["shortwave_radiation_icon_ch2_ens_max"] = df[icon_ch2_cols].max(axis=1)
     else:
-        print("Warning: No MeteoSwiss ICON-CH1 ensemble columns found", flush=True)
+        print("Warning: No MeteoSwiss ICON-CH2 ensemble columns found", flush=True)
 
     
     print(f"Compressed ensemble runs: {len(icon_ch1_cols)} ICON-CH1 cols, {len(icon_ch2_cols)} ICON-CH2 cols", flush=True)

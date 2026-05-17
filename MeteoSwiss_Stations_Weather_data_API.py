@@ -103,7 +103,7 @@ for i, st in enumerate(stations_with_rad, 1):
         print(f"[{i}] Downloading data for {st.upper()}")
         df = read_csv_with_retries(url, retries=5, wait=10)
     except Exception as e:
-        print(f"[{i}] {st.upper()} - download failed after retries: {e}")
+        print(f"[{i}] {st.upper()} â€“ download failed after retries: {e}")
         failed_stations.append(st.upper())
         continue
 
@@ -117,7 +117,7 @@ for i, st in enumerate(stations_with_rad, 1):
 
     # Always include GRE
     if required_parameter not in df.columns:
-        print(f"[{i}] {st.upper()} - no {required_parameter} column")
+        print(f"[{i}] {st.upper()} â€“ no {required_parameter} column")
         continue
 
     # Initialize output dataframe

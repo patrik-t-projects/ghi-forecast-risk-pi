@@ -8,9 +8,9 @@ from config import EMAIL_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER
 
 def send_html_report_email(
     to_address: str,
-    html_file_path: str | Path,
-    subject: str = "PV Forecast Risk Report",
-    body: str = "Attached is the latest PV forecast risk HTML report.",
+    html_file_path: str | Path | list[str | Path] | tuple[str | Path, ...],
+    subject: str = "GHI Forecast Risk Report",
+    body: str = "Attached are the latest GHI forecast risk HTML reports.",
     *,
     smtp_host: str | None = None,
     smtp_port: int | None = None,
@@ -20,10 +20,15 @@ def send_html_report_email(
     use_tls: bool = True,
 ) -> None:
     """Send the generated HTML report as an email attachment."""
-    
-    report_path = Path(html_file_path).expanduser().resolve()
-    if not report_path.exists():
-        raise FileNotFoundError(f"HTML report not found: {report_path}")
+
+    if isinstance(html_file_path, (str, Path)):
+        report_paths = [Path(html_file_path).expanduser().resolve()]
+    else:
+        report_paths = [Path(path).expanduser().resolve() for path in html_file_path]
+
+    for report_path in report_paths:
+        if not report_path.exists():
+            raise FileNotFoundError(f"HTML report not found: {report_path}")
 
     smtp_host = smtp_host or SMTP_HOST
     smtp_port = smtp_port or SMTP_PORT
@@ -50,17 +55,18 @@ def send_html_report_email(
     message["Subject"] = subject
     message.set_content(body)
 
-    html_text = report_path.read_text(encoding="utf-8")
+    html_text = report_paths[0].read_text(encoding="utf-8")
     message.add_alternative(html_text, subtype="html")
 
-    content_type, _ = mimetypes.guess_type(report_path)
-    maintype, subtype = (content_type or "text/html").split("/", 1)
-    message.add_attachment(
-        report_path.read_bytes(),
-        maintype=maintype,
-        subtype=subtype,
-        filename=report_path.name,
-    )
+    for report_path in report_paths:
+        content_type, _ = mimetypes.guess_type(report_path)
+        maintype, subtype = (content_type or "text/html").split("/", 1)
+        message.add_attachment(
+            report_path.read_bytes(),
+            maintype=maintype,
+            subtype=subtype,
+            filename=report_path.name,
+        )
 
     with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
         if use_tls:

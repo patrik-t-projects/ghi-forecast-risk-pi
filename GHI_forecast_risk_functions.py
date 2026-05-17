@@ -431,9 +431,9 @@ def compute_future_quantile_error_band(
     df_features_future,
     fit_result,
     error_col,
-    risk_window=10.0,
+    risk_window=0.1,
     quantile=0.95,
-    min_samples=20,
+    min_samples=5,
     smooth=True,
     enforce_monotonic=True,
 ):
@@ -463,7 +463,7 @@ def compute_future_quantile_error_band(
         The q95 band is computed from abs(error_col).
 
     risk_window : float
-        Local risk window half-width, e.g. 10 means R* +/- 10.
+        Local risk window half-width, e.g. 10 means R* Â± 10.
 
     quantile : float
         Error quantile to estimate. For 95% band use 0.95.

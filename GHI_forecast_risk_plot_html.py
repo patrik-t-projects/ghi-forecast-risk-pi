@@ -5,30 +5,31 @@ import json
 from datetime import date
 import requests
 from PV_forecast_uncertainty_functions import choose_f0, limits_for_f0
-from PV_forecast_risk_functions import fill_model_gaps_with_backup_model, compute_future_quantile_error_band
-from PV_forecast_risk_Fit_Performance import build_risk_feature_dataframe, fit_risk_score_from_features
+from GHI_forecast_risk_functions import fill_model_gaps_with_backup_model, compute_future_quantile_error_band
+from GHI_forecast_risk_Fit_Performance import build_risk_feature_dataframe, fit_risk_score_from_features
 from config import DATA_DIR, DOWNLOADS_DIR, REPORTS_DIR, maybe_open_browser
 
 
 # =========================
 # USER SELECTION
 # =========================
-START_DATE = globals().get("START_DATE", "2026-05-12")
-END_DATE   = globals().get("END_DATE", "2026-05-17")
+START_DATE = globals().get("START_DATE", "2026-05-15")
+END_DATE   = globals().get("END_DATE", "2026-05-21")
 MODEL = "ICON1"   # "ICON1" or "ICON2"
 FIGSIZE = (10, 5)
+INCLUDE_SCATTERPLOTS = globals().get("INCLUDE_SCATTERPLOTS", True)
+OUTPUT_SUFFIX = globals().get("OUTPUT_SUFFIX", "")
+OPEN_BROWSER = globals().get("OPEN_BROWSER", True)
 
-GHI_threshold = 0
+GHI_threshold = 1
 risk_window=0.1
 quantile=0.95
 min_samples=5
 
-TRACKING_DIR = REPORTS_DIR / "tracking"
+TRACKING_DIR = REPORTS_DIR
 TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 
-DAILY_PREDICTION_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_daily_predictions_{MODEL}.csv"
-DAILY_PERFORMANCE_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_daily_performance_{MODEL}.csv"
-HOURLY_PERFORMANCE_TRACKING_PATH = TRACKING_DIR / f"PV_forecast_hourly_performance_{MODEL}.csv"
+REPORT_DATA_PATH = TRACKING_DIR / f"GHI_forecast_risk_report_data_{MODEL}.csv"
 
 # =========================
 
@@ -106,7 +107,7 @@ def bar_trace(df, x_col, y_col, name, color, hover_columns=None, y_axis="y", wid
     }
 
 
-def scatter_trace(df, x_col, y_col, name, color, hover_columns, size=6):
+def scatter_trace(df, x_col, y_col, name, color, hover_columns, size=5):
     plot_df = df[[x_col, y_col] + hover_columns].dropna(subset=[x_col, y_col]).copy()
     return {
         "type": "scatter",
@@ -175,6 +176,17 @@ def write_interactive_html_report(figures, output_path, page_title):
     margin-bottom: 22px;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   }}
+  .report-row {{
+    margin-bottom: 24px;
+  }}
+  .row-grid {{
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }}
+  .row-grid .chart {{
+    margin-bottom: 0;
+  }}
   .chart-title {{
     font-size: 18px;
     font-weight: 700;
@@ -194,7 +206,7 @@ def write_interactive_html_report(figures, output_path, page_title):
   }}
   .axis text {{
     fill: var(--muted);
-    font-size: 12px;
+    font-size: 14px;
   }}
   .axis path,
   .axis line {{
@@ -207,7 +219,7 @@ def write_interactive_html_report(figures, output_path, page_title):
   }}
   .axis-label {{
     fill: var(--text);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
   }}
   .legend {{
@@ -280,7 +292,7 @@ def write_interactive_html_report(figures, output_path, page_title):
 </main>
 <div id="tooltip" class="tooltip"></div>
 <script>
-const figures = {payload};
+const reportRows = {payload};
 const chartsEl = document.getElementById("charts");
 const tooltip = document.getElementById("tooltip");
 
@@ -402,17 +414,20 @@ function traceDomain(figure, trace) {{
   return {{ xs, ys }};
 }}
 
-function renderFigure(figure, index) {{
+function renderFigure(figure, parent = chartsEl) {{
   const wrapper = document.createElement("section");
   wrapper.className = "chart";
   wrapper.innerHTML = `<div class="chart-title">${{htmlEscape(figure.title)}}</div><div class="chart-body"><svg></svg><div class="legend"></div></div>`;
-  chartsEl.appendChild(wrapper);
+  parent.appendChild(wrapper);
 
   const svg = wrapper.querySelector("svg");
   const legend = wrapper.querySelector(".legend");
   const hidden = new Set();
 
-  figure.traces.forEach((trace, traceIndex) => {{
+  figure.traces
+    .map((trace, traceIndex) => ({{ trace, traceIndex }}))
+    .sort((a, b) => (a.trace.legendOrder ?? a.traceIndex) - (b.trace.legendOrder ?? b.traceIndex))
+    .forEach(({{ trace, traceIndex }}) => {{
     const button = document.createElement("button");
     button.type = "button";
 
@@ -940,7 +955,17 @@ function renderFigure(figure, index) {{
   window.addEventListener("resize", draw);
 }}
 
-figures.forEach(renderFigure);
+function renderReportRow(row) {{
+  const section = document.createElement("section");
+  section.className = "report-row";
+  section.innerHTML = `<div class="row-grid"></div>`;
+  chartsEl.appendChild(section);
+
+  const grid = section.querySelector(".row-grid");
+  row.figures.forEach(figure => renderFigure(figure, grid));
+}}
+
+reportRows.forEach(renderReportRow);
 </script>
 </body>
 </html>
@@ -962,6 +987,28 @@ def upsert_tracking_csv(path, new_rows, key_cols):
 
     combined = combined.drop_duplicates(subset=key_cols, keep="last")
     combined = combined.sort_values(key_cols).reset_index(drop=True)
+    combined.to_csv(path, index=False)
+
+    return combined
+
+
+def upsert_report_data_csv(path, new_rows):
+    new_df = pd.DataFrame(new_rows)
+
+    if new_df.empty:
+        return pd.DataFrame()
+
+    if path.exists():
+        old_df = pd.read_csv(path)
+        combined = pd.concat([old_df, new_df], ignore_index=True)
+    else:
+        combined = new_df.copy()
+
+    combined = combined.drop_duplicates(
+        subset=["row_type", "Datetime UTC", "model"],
+        keep="last",
+    )
+    combined = combined.sort_values(["row_type", "Datetime UTC", "model"]).reset_index(drop=True)
     combined.to_csv(path, index=False)
 
     return combined
@@ -1030,7 +1077,7 @@ today_start_utc = pd.Timestamp.now(tz="UTC").normalize()
 start_dt_hist = pd.to_datetime("2026-03-21", utc=True)
 end_dt_hist = today_start_utc          # exclusive: includes full yesterday
 start_dt_future = today_start_utc      # inclusive: first future timestamp is today 00:00 UTC
-end_dt_future = pd.to_datetime(END_DATE, utc=True)
+end_dt_future = pd.to_datetime(END_DATE, utc=True) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
 df_rad_hist = df_rad[(df_rad["Datetime UTC"] >= start_dt_hist) & (df_rad["Datetime UTC"] < end_dt_hist)].copy()
 df_metrics_hist = df_metrics[(df_metrics["Datetime UTC"] >= start_dt_hist) & (df_metrics["Datetime UTC"] < end_dt_hist)].copy()
@@ -1214,7 +1261,7 @@ line_y_values.extend(future_df["upper_q95"].dropna().tolist())
 line_y_max = max(1, max(line_y_values) * 1.05) if line_y_values else 1
 
 line_figure = {
-    "title": f"MeteoSwiss Stations and Previous-Day Model Values from {yesterday_start_utc.strftime('%Y-%m-%d')} to {END_DATE}",
+    "title": "Previous-Day Model Runs, Actual GHI and Forecasted GHI with errorband",
     "xType": "date",
     "xTickHours": 6,
     "dayOnlyAtMidnight": True,
@@ -1224,7 +1271,6 @@ line_figure = {
     "yRange": [0, clean_float(line_y_max)],
     "traces": line_traces,
 }
-
 
 # =========================
 # Get imbalances for yesterday
@@ -1350,7 +1396,8 @@ hourly_output_col = fit_result["output_col"]
 yesterday_date = today_start_utc - pd.Timedelta(days=1)
 forecast_run_date = today_start_utc.strftime("%Y-%m-%d")
 
-tmp_hourly = plot_context["df_plot"][["Datetime UTC", hourly_error_col, hourly_output_col]].dropna().copy()
+tmp_hourly_cols = ["Datetime UTC", hourly_error_col, hourly_output_col] + feature_info["feature_cols"]
+tmp_hourly = plot_context["df_plot"][tmp_hourly_cols].dropna(subset=["Datetime UTC", hourly_error_col, hourly_output_col]).copy()
 tmp_hourly = tmp_hourly[tmp_hourly[hourly_output_col] != 0].copy()
 tmp_hourly[hourly_abs_error_col] = tmp_hourly[hourly_error_col].abs()
 
@@ -1490,11 +1537,22 @@ df_features_yesterday_pred["Time UTC"] = df_features_yesterday_pred["Datetime UT
 df_features_yesterday_pred["Risk score"] = df_features_yesterday_pred[hourly_output_col].map(lambda v: f"{v:.3f}")
 df_features_yesterday_pred["q95 range"] = df_features_yesterday_pred["q95_error_band"].map(lambda v: f"0.000 to {v:.3f}")
 
+predicted_hourly_output_col = f"predicted {hourly_output_col}"
+
 yesterday_actual = tmp_hourly.loc[tmp_hourly["is_yesterday"]].copy()
+yesterday_actual = yesterday_actual.drop(columns=["Risk score"], errors="ignore")
+yesterday_actual = yesterday_actual.merge(
+    df_features_yesterday_pred[["Datetime UTC", hourly_output_col]].rename(
+        columns={hourly_output_col: predicted_hourly_output_col}
+    ),
+    on="Datetime UTC",
+    how="inner",
+)
+yesterday_actual["Risk score"] = yesterday_actual[predicted_hourly_output_col].map(lambda v: f"{v:.3f}")
 
 yesterday_y_values = pd.concat(
     [
-        yesterday_actual[hourly_output_col].abs(),
+        yesterday_actual[predicted_hourly_output_col].abs(),
         df_features_yesterday_pred[hourly_output_col].abs(),
     ],
     ignore_index=True,
@@ -1503,7 +1561,7 @@ yesterday_y_values = pd.concat(
 yesterday_y_max = float(yesterday_y_values.max()) if not yesterday_y_values.empty else 1.0
 
 yesterday_hourly_scatter_figure = {
-    "title": f"{MODEL}: Yesterday hourly predicted and actual risk scores",
+    "title": "Yesterday predicted risk scores with error band and actual forecast errors",
     "xType": "linear",
     "xLabel": "Hourly abs. GHI forecast error",
     "yLabel": "Hourly fitted risk score",
@@ -1518,12 +1576,12 @@ yesterday_hourly_scatter_figure = {
             name="Yesterday prediction",
             color=rgb_to_css(elcom_colors["orange"]),
             hover_columns=["Day", "Time UTC", "Risk score", "q95 range"],
-            size=6,
+            size=5,
         ),
         scatter_trace(
             yesterday_actual,
             x_col=hourly_abs_error_col,
-            y_col=hourly_output_col,
+            y_col=predicted_hourly_output_col,
             name="Yesterday actual",
             color=rgb_to_css(elcom_colors["dark_blue"]),
             hover_columns=["Day", "Time UTC", "Risk score", "Forecast error"],
@@ -1534,8 +1592,7 @@ yesterday_hourly_scatter_figure = {
 
 hourly_scatter_figure = {
     "title": (
-        f"{MODEL}: Historical hourly fitted risk score vs hourly abs. forecast error\n"
-        f"Kendall-tau = {hourly_kendall_tau_label}"
+        "Historical hourly fitted risk score vs abs. forecast error"
     ),
     "xType": "linear",
     "xLabel": "Hourly abs. GHI forecast error",
@@ -1559,84 +1616,507 @@ current_hourly_rank_rmse = rank_rmse_percent(
     tmp_hourly[hourly_output_col].abs(),
 )
 
-hourly_performance_rows = [
-    {
-        "run_date": forecast_run_date,
+historical_performance_percent = (
+    100 * (hourly_kendall_tau + 1) / 2
+    if np.isfinite(hourly_kendall_tau)
+    else np.nan
+)
+
+yesterday_ordering_tau = yesterday_actual[hourly_abs_error_col].corr(
+    yesterday_actual[predicted_hourly_output_col],
+    method="kendall",
+) if (
+    len(yesterday_actual) >= 3
+    and yesterday_actual[hourly_abs_error_col].nunique() > 1
+    and yesterday_actual[predicted_hourly_output_col].nunique() > 1
+) else np.nan
+
+yesterday_ordering_tau_percent = 100 * yesterday_ordering_tau if np.isfinite(yesterday_ordering_tau) else np.nan
+
+report_rows = []
+
+report_ghi_df = df_rad[
+    (df_rad["Datetime UTC"] >= yesterday_start_utc)
+    & (df_rad["Datetime UTC"] <= end_dt_future)
+].copy()
+
+report_ghi_df = report_ghi_df.merge(
+    df_features_future[["Datetime UTC", "q95_error_band"]],
+    on="Datetime UTC",
+    how="left",
+)
+report_ghi_df["q95_upper"] = report_ghi_df[f"{MODEL} prev day 0"] + report_ghi_df["q95_error_band"]
+report_ghi_df["q95_lower"] = (report_ghi_df[f"{MODEL} prev day 0"] - report_ghi_df["q95_error_band"]).clip(lower=0)
+
+for _, row in report_ghi_df.iterrows():
+    out = {
+        "row_type": "ghi",
+        "Datetime UTC": pd.Timestamp(row["Datetime UTC"]).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "model": MODEL,
-        "kendall_tau_percent": clean_float(100 * hourly_kendall_tau),
+    }
+
+    for col in [
+        "MeteoSwiss stations",
+        f"{MODEL} prev day 0",
+        f"{MODEL} prev day 1",
+        f"{MODEL} prev day 2",
+        f"{MODEL} prev day 3",
+        "q95_error_band",
+        "q95_lower",
+        "q95_upper",
+    ]:
+        out[col] = clean_float(row[col]) if col in row else None
+
+    for d in range(4):
+        err_col = f"MeteoSwiss - {MODEL}_d{d}"
+        prev_col = f"{MODEL} prev day {d}"
+        out[err_col] = clean_float(row["MeteoSwiss stations"] - row[prev_col]) if pd.notna(row.get("MeteoSwiss stations")) and pd.notna(row.get(prev_col)) else None
+
+    report_rows.append(out)
+
+for _, row in df_CAB.iterrows():
+    report_rows.append(
+        {
+            "row_type": "imbalance",
+            "Datetime UTC": pd.Timestamp(row["Date Time [UTC]"]).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "model": MODEL,
+            "Total System Imbalance": clean_float(row["Total System Imbalance"]),
+        }
+    )
+
+yesterday_prediction_rows = df_features_yesterday_pred[
+    ["Datetime UTC", hourly_output_col, "q95_error_band", "hourly_error_q95_left", "hourly_error_q95_mid", "hourly_error_q95_right"] + pred_feature_cols
+].merge(
+    yesterday_actual[["Datetime UTC", hourly_abs_error_col, predicted_hourly_output_col]],
+    on="Datetime UTC",
+    how="left",
+)
+
+for _, row in yesterday_prediction_rows.iterrows():
+    out = {
+            "row_type": "hourly_prediction",
+            "Datetime UTC": pd.Timestamp(row["Datetime UTC"]).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "model": MODEL,
+            "predicted_hourly_risk_score": clean_float(row[hourly_output_col]),
+            "q95_error_band": clean_float(row["q95_error_band"]),
+            "hourly_error_q95_left": clean_float(row["hourly_error_q95_left"]),
+            "hourly_error_q95_mid": clean_float(row["hourly_error_q95_mid"]),
+            "hourly_error_q95_right": clean_float(row["hourly_error_q95_right"]),
+            "actual_abs_hourly_forecast_error": clean_float(row[hourly_abs_error_col]),
+            "actual_y_predicted_risk_score": clean_float(row[predicted_hourly_output_col]),
+        }
+
+    for col in pred_feature_cols:
+        out[col] = clean_float(row[col])
+
+    report_rows.append(out)
+
+for _, row in tmp_hourly.iterrows():
+    out = {
+            "row_type": "historical_scatter",
+            "Datetime UTC": pd.Timestamp(row["Datetime UTC"]).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "model": MODEL,
+            "actual_abs_hourly_forecast_error": clean_float(row[hourly_abs_error_col]),
+            "fitted_hourly_risk_score": clean_float(row[hourly_output_col]),
+        }
+
+    for col in feature_info["feature_cols"]:
+        out[col] = clean_float(row[col])
+
+    report_rows.append(out)
+
+report_rows.append(
+    {
+        "row_type": "yesterday_ordering_performance",
+        "Datetime UTC": yesterday_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model": MODEL,
+        "kendall_tau_percent": clean_float(yesterday_ordering_tau_percent),
+        "n_hours": int(len(yesterday_actual)),
+    }
+)
+
+report_rows.append(
+    {
+        "row_type": "historical_performance",
+        "Datetime UTC": yesterday_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model": MODEL,
+        "kendall_tau_percent": clean_float(historical_performance_percent),
         "rank_rmse_percent": clean_float(current_hourly_rank_rmse),
         "n_hours": int(len(tmp_hourly)),
     }
-]
-
-df_hourly_performance_tracking = upsert_tracking_csv(
-    HOURLY_PERFORMANCE_TRACKING_PATH,
-    hourly_performance_rows,
-    key_cols=["run_date", "model"],
 )
 
-df_hourly_model_performance = df_hourly_performance_tracking[
-    df_hourly_performance_tracking["model"] == MODEL
+df_report = upsert_report_data_csv(
+    REPORT_DATA_PATH,
+    report_rows,
+)
+
+df_report["Datetime UTC"] = pd.to_datetime(df_report["Datetime UTC"], utc=True)
+df_report_model = df_report[df_report["model"] == MODEL].copy()
+
+report_ghi = df_report_model[df_report_model["row_type"] == "ghi"].copy()
+report_imbalance = df_report_model[df_report_model["row_type"] == "imbalance"].copy()
+report_hourly_prediction = df_report_model[df_report_model["row_type"] == "hourly_prediction"].copy()
+report_yesterday_performance = df_report_model[df_report_model["row_type"] == "yesterday_ordering_performance"].copy()
+report_historical_scatter = df_report_model[df_report_model["row_type"] == "historical_scatter"].copy()
+report_historical_performance = df_report_model[df_report_model["row_type"] == "historical_performance"].copy()
+
+report_ghi_window = report_ghi[
+    (report_ghi["Datetime UTC"] >= yesterday_start_utc)
+    & (report_ghi["Datetime UTC"] <= end_dt_future)
 ].copy()
 
-df_hourly_model_performance["Datetime UTC"] = pd.to_datetime(
-    df_hourly_model_performance["run_date"],
-    utc=True,
+line_traces = []
+
+for col in prev_day_cols:
+    if col == "MeteoSwiss stations":
+        plot_df = report_ghi_window[(report_ghi_window["Datetime UTC"] >= yesterday_start_utc) & (report_ghi_window["Datetime UTC"] <= now_utc)]
+    else:
+        plot_df = report_ghi_window[(report_ghi_window["Datetime UTC"] >= yesterday_start_utc) & (report_ghi_window["Datetime UTC"] < today_start_utc)]
+
+    line_traces.append(
+        time_series_trace(
+            plot_df,
+            x_col="Datetime UTC",
+            y_col=col,
+            name=col,
+            color=rgb_to_css(prev_day_colors[col]),
+        )
+    )
+
+future_plot_df = report_ghi_window[report_ghi_window["Datetime UTC"] >= today_start_utc].copy()
+
+line_traces.append(
+    time_series_trace(
+        future_plot_df,
+        x_col="Datetime UTC",
+        y_col=future_col,
+        name=f"{MODEL} forecast",
+        color=rgb_to_css(prev_day_colors[future_col]),
+        dash=True,
+    )
 )
 
-df_hourly_model_performance = df_hourly_model_performance.rename(
-    columns={
-        "kendall_tau_percent": "Kendall tau [%]",
-        "rank_rmse_percent": "Rank RMSE [%]",
-    }
+line_traces.append(
+    band_trace(
+        future_plot_df,
+        x_col="Datetime UTC",
+        lower_col="q95_lower",
+        upper_col="q95_upper",
+        name="q95 forecast-error band",
+        color=rgb_to_css(prev_day_colors[future_col]),
+    )
 )
 
-hourly_performance_figure = {
-    "title": f"{MODEL}: Tracked historical hourly model performance",
+line_y_values = []
+for col in prev_day_cols:
+    line_y_values.extend(report_ghi_window[col].dropna().tolist())
+line_y_values.extend(report_ghi_window["q95_upper"].dropna().tolist())
+line_y_max = max(1, max(line_y_values) * 1.05) if line_y_values else 1
+
+line_figure = {
+    "title": "Previous-Day Model Runs, Actual GHI and Forecasted GHI with errorband",
+    "xType": "date",
+    "xTickHours": 6,
+    "dayOnlyAtMidnight": True,
+    "sharedHover": True,
+    "xLabel": "Datetime UTC",
+    "yLabel": "GHI values [W/m^2]",
+    "yRange": [0, clean_float(line_y_max)],
+    "traces": line_traces,
+}
+
+report_yesterday_ghi = report_ghi[
+    (report_ghi["Datetime UTC"] >= yesterday_start)
+    & (report_ghi["Datetime UTC"] < today_start)
+].copy()
+
+imbalance_traces = []
+
+for col in metric_cols:
+    imbalance_traces.append(
+        time_series_trace(
+            report_yesterday_ghi,
+            x_col="Datetime UTC",
+            y_col=col,
+            name=col,
+            color=rgb_to_css(horizon_colors[col]),
+        )
+    )
+
+report_imbalance_yesterday = report_imbalance[
+    (report_imbalance["Datetime UTC"] >= yesterday_start)
+    & (report_imbalance["Datetime UTC"] < today_start)
+].copy()
+report_imbalance_yesterday["Day"] = report_imbalance_yesterday["Datetime UTC"].apply(english_day_label)
+report_imbalance_yesterday["Time UTC"] = report_imbalance_yesterday["Datetime UTC"].dt.strftime("%H:%M")
+report_imbalance_yesterday["Imbalance [MW]"] = report_imbalance_yesterday["Total System Imbalance"].map(lambda v: f"{v:.1f}")
+
+imbalance_traces.append(
+    bar_trace(
+        report_imbalance_yesterday,
+        x_col="Datetime UTC",
+        y_col="Total System Imbalance",
+        name="Imbalance",
+        color=rgb_to_css(elcom_colors["grey"]),
+        hover_columns=["Day", "Time UTC", "Imbalance [MW]"],
+        y_axis="y2",
+        width_minutes=12,
+        alpha=0.7,
+    )
+)
+
+imbalance_figure = {
+    "title": f"GHI forecast error and Imbalances on {plot_date}",
+    "xType": "date",
+    "xTickHours": 1,
+    "hoursOnlyTicks": True,
+    "sharedHover": True,
+    "xLabel": "Datetime UTC",
+    "yLabel": "GHI forecast error CH",
+    "y2Label": "Imbalances [MW]",
+    "yRange": [clean_float(yL_min), clean_float(yL_max)],
+    "y2Range": [clean_float(yR_min), clean_float(yR_max)],
+    "traces": imbalance_traces,
+}
+
+report_hourly_prediction["Day"] = report_hourly_prediction["Datetime UTC"].apply(english_day_label)
+report_hourly_prediction["Time UTC"] = report_hourly_prediction["Datetime UTC"].dt.strftime("%H:%M")
+report_hourly_prediction["Risk score"] = report_hourly_prediction["predicted_hourly_risk_score"].map(lambda v: f"{v:.3f}")
+report_hourly_prediction["Forecast error"] = report_hourly_prediction["actual_abs_hourly_forecast_error"].map(lambda v: f"{v:.3f}")
+report_hourly_prediction["q95 range"] = report_hourly_prediction["q95_error_band"].map(lambda v: f"0.000 to {v:.3f}")
+
+yesterday_prediction_window = report_hourly_prediction[
+    (report_hourly_prediction["Datetime UTC"] >= yesterday_start_utc)
+    & (report_hourly_prediction["Datetime UTC"] < today_start_utc)
+].copy()
+
+yesterday_y_values = pd.concat(
+    [
+        yesterday_prediction_window["predicted_hourly_risk_score"].abs(),
+        yesterday_prediction_window["actual_y_predicted_risk_score"].abs(),
+    ],
+    ignore_index=True,
+).dropna()
+yesterday_y_max = float(yesterday_y_values.max()) if not yesterday_y_values.empty else 1.0
+
+yesterday_hourly_scatter_figure = {
+    "title": "Yesterday predicted risk scores with error band and actual forecast errors",
+    "xType": "linear",
+    "xLabel": "Hourly abs. GHI forecast error",
+    "yLabel": "Hourly predicted risk score",
+    "yRange": [0, clean_float(max(1.0, yesterday_y_max * 1.05))],
+    "traces": [
+        error_scatter_trace(
+            yesterday_prediction_window,
+            x_col="hourly_error_q95_mid",
+            y_col="predicted_hourly_risk_score",
+            x_left_col="hourly_error_q95_left",
+            x_right_col="hourly_error_q95_right",
+            name="Yesterday prediction",
+            color=rgb_to_css(elcom_colors["orange"]),
+            hover_columns=["Day", "Time UTC", "Risk score", "q95 range"],
+            size=5,
+        ),
+        scatter_trace(
+            yesterday_prediction_window,
+            x_col="actual_abs_hourly_forecast_error",
+            y_col="actual_y_predicted_risk_score",
+            name="Yesterday actual",
+            color=rgb_to_css(elcom_colors["dark_blue"]),
+            hover_columns=["Day", "Time UTC", "Risk score", "Forecast error"],
+            size=5,
+        ),
+    ],
+}
+
+report_yesterday_performance = report_yesterday_performance.sort_values("Datetime UTC")
+yesterday_performance_figure = {
+    "title": "Yesterday's model performance over time",
     "xType": "date",
     "xTickHours": 24,
     "dayOnlyAtMidnight": True,
     "sharedHover": True,
     "xLabel": "Day",
     "yLabel": "Kendall-tau [%]",
-    "y2Label": "Rank RMSE [%]",
     "yRange": [0, 100],
-    "y2Range": [0, 100],
     "traces": [
         time_series_trace(
-            df_hourly_model_performance,
+            report_yesterday_performance,
             x_col="Datetime UTC",
-            y_col="Kendall tau [%]",
+            y_col="kendall_tau_percent",
+            name="Yesterday ordering Kendall-tau [%]",
+            color="rgba(0, 0, 0, 1)",
+            marker=True,
+        ),
+    ],
+}
+
+report_historical_scatter["Day"] = report_historical_scatter["Datetime UTC"].apply(english_day_label)
+report_historical_scatter["Time UTC"] = report_historical_scatter["Datetime UTC"].dt.strftime("%H:%M")
+report_historical_scatter["Risk score"] = report_historical_scatter["fitted_hourly_risk_score"].map(lambda v: f"{v:.3f}")
+report_historical_scatter["Forecast error"] = report_historical_scatter["actual_abs_hourly_forecast_error"].map(lambda v: f"{v:.3f}")
+hist_scatter_y_max = float(report_historical_scatter["fitted_hourly_risk_score"].max()) if not report_historical_scatter.empty else 1.0
+
+hourly_scatter_figure = {
+    "title": (
+        "Historical hourly fitted risk score vs abs. forecast error"
+    ),
+    "xType": "linear",
+    "xLabel": "Hourly abs. GHI forecast error",
+    "yLabel": "Hourly fitted risk score",
+    "yRange": [0, clean_float(max(1.0, hist_scatter_y_max * 1.05))],
+    "traces": [
+        scatter_trace(
+            report_historical_scatter,
+            x_col="actual_abs_hourly_forecast_error",
+            y_col="fitted_hourly_risk_score",
+            name="Historical",
+            color=rgb_to_css(elcom_colors["green"]),
+            hover_columns=["Day", "Time UTC", "Risk score", "Forecast error"],
+            size=4,
+        ),
+    ],
+}
+
+report_historical_performance = report_historical_performance.sort_values("Datetime UTC")
+
+hourly_performance_figure = {
+    "title": "Tracked historical hourly model performance",
+    "xType": "date",
+    "xTickHours": 24,
+    "dayOnlyAtMidnight": True,
+    "sharedHover": True,
+    "xLabel": "Day",
+    "yLabel": "Kendall-tau / Rank RMSE [%]",
+    "yRange": [0, 100],
+    "traces": [
+        time_series_trace(
+            report_historical_performance,
+            x_col="Datetime UTC",
+            y_col="kendall_tau_percent",
             name="Kendall-tau [%]",
             color="rgba(0, 0, 0, 1)",
             marker=True,
         ),
         time_series_trace(
-            df_hourly_model_performance,
+            report_historical_performance,
             x_col="Datetime UTC",
-            y_col="Rank RMSE [%]",
+            y_col="rank_rmse_percent",
             name="Rank RMSE [%]",
-            color=rgb_to_css(elcom_colors["grey"]),
+            color="rgba(80, 80, 80, 1)",
             dash=True,
             marker=True,
-            y_axis="y2",
         ),
     ],
 }
 
-figures = [
-    line_figure,
-    imbalance_figure,
-    yesterday_hourly_scatter_figure,
-    hourly_scatter_figure,
-    hourly_performance_figure,
+historical_q95_ghi = report_ghi[
+    report_ghi["q95_error_band"].notna()
+    & report_ghi[f"{MODEL} prev day 0"].notna()
+    & (report_ghi["Datetime UTC"] < today_start_utc)
+].copy()
+
+historical_q95_ghi = historical_q95_ghi.sort_values("Datetime UTC")
+
+historical_q95_y_values = []
+for col in ["MeteoSwiss stations", f"{MODEL} prev day 0", "q95_upper"]:
+    historical_q95_y_values.extend(historical_q95_ghi[col].dropna().tolist())
+historical_q95_y_max = max(1, max(historical_q95_y_values) * 1.05) if historical_q95_y_values else 1
+
+historical_q95_figure = {
+    "title": "Historical prev day 0 forecast with q95 error band",
+    "xType": "date",
+    "xTickHours": 24,
+    "dayOnlyAtMidnight": True,
+    "sharedHover": True,
+    "xLabel": "Datetime UTC",
+    "yLabel": "GHI [W/m^2]",
+    "yRange": [0, clean_float(historical_q95_y_max)],
+    "traces": [
+        dict(
+            band_trace(
+                historical_q95_ghi,
+                x_col="Datetime UTC",
+                lower_col="q95_lower",
+                upper_col="q95_upper",
+                name="q95 forecast-error band",
+                color=rgb_to_css(elcom_colors["green"]),
+            ),
+            legendOrder=3,
+        ),
+        time_series_trace(
+            historical_q95_ghi,
+            x_col="Datetime UTC",
+            y_col=f"{MODEL} prev day 0",
+            name=f"{MODEL} prev day 0 forecast",
+            color=rgb_to_css(elcom_colors["green"]),
+        ) | {"legendOrder": 2},
+        time_series_trace(
+            historical_q95_ghi,
+            x_col="Datetime UTC",
+            y_col="MeteoSwiss stations",
+            name="MeteoSwiss stations",
+            color=rgb_to_css(elcom_colors["dark_blue"]),
+        ) | {"legendOrder": 1},
+    ],
+}
+
+report_layout = [
+    {
+        "title": "Prev Day Model Runs and actual GHI from MeteoSwiss stations % forecasted GHI with errorband.",
+        "columns": 1,
+        "figures": [line_figure],
+    },
+    {
+        "title": f"GHI forecast errors and Imbalances on {plot_date}",
+        "columns": 1,
+        "figures": [imbalance_figure],
+    },
+    {
+        "title": "Model performance yesterday",
+        "columns": 1,
+        "figures": [yesterday_hourly_scatter_figure],
+    },
+    {
+        "title": "Model performance yesterday",
+        "columns": 1,
+        "figures": [yesterday_performance_figure],
+    },
+    {
+        "title": "Model performance historical",
+        "columns": 1,
+        "figures": [hourly_scatter_figure],
+    },
+    {
+        "title": "Model performance historical",
+        "columns": 1,
+        "figures": [hourly_performance_figure],
+    },
+    {
+        "title": "Historical GHI forecast with q95 error band",
+        "columns": 1,
+        "figures": [historical_q95_figure],
+    },
 ]
+
+if not INCLUDE_SCATTERPLOTS:
+    report_layout = [
+        row
+        for row in report_layout
+        if not any(
+            figure in [yesterday_hourly_scatter_figure, hourly_scatter_figure]
+            for figure in row["figures"]
+        )
+    ]
+
 output_dir = REPORTS_DIR
-output_html = output_dir / f"PV_forecast_risk_{MODEL}_{START_DATE}_to_{END_DATE}.html"
+output_html = output_dir / f"GHI_forecast_risk_{MODEL}_{START_DATE}_to_{END_DATE}{OUTPUT_SUFFIX}.html"
 write_interactive_html_report(
-    figures=figures,
+    figures=report_layout,
     output_path=output_html,
-    page_title=f"PV Forecast Risk Report - {MODEL}",
+    page_title=f"GHI Forecast Risk Report - {pd.Timestamp.now(tz='Europe/Zurich').strftime('%d.%m.%Y')}",
 )
 print(f"Interactive HTML report written to: {output_html}")
-maybe_open_browser(output_html)
+if OPEN_BROWSER:
+    maybe_open_browser(output_html)

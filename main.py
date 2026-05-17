@@ -122,11 +122,10 @@ def run_pipeline():
         init_globals={"START_DATE": START_DATE, "END_DATE": END_DATE},
     )
 
-
     # ==============================================
-    # Run PV_forecast_risk_plot_html
+    # Run GHI_forecast_risk_plot_html
     # ==============================================
-    print("\nRunning PV_forecast_risk_plot_html.py...")
+    print("\nRunning GHI_forecast_risk_plot_html.py...")
 
     START_DATE = zurich_to_utc_string(updated["Datetime"].min(), "%Y-%m-%d")
     END_DATE = zurich_to_utc_string(updated["Datetime"].max(), "%Y-%m-%d")
@@ -135,20 +134,41 @@ def run_pipeline():
     print(f"Calculating from {START_DATE} to {END_DATE}")
 
     runpy.run_path(
-        str(script_path("PV_forecast_risk_plot_html.py")),
-        init_globals={"START_DATE": START_DATE, "END_DATE": END_DATE},
+        str(script_path("GHI_forecast_risk_plot_html.py")),
+        init_globals={
+            "START_DATE": START_DATE,
+            "END_DATE": END_DATE,
+            "INCLUDE_SCATTERPLOTS": True,
+            "OUTPUT_SUFFIX": "_with_scatterplots",
+            "OPEN_BROWSER": False,
+        },
     )
 
+    runpy.run_path(
+        str(script_path("GHI_forecast_risk_plot_html.py")),
+        init_globals={
+            "START_DATE": START_DATE,
+            "END_DATE": END_DATE,
+            "INCLUDE_SCATTERPLOTS": False,
+            "OUTPUT_SUFFIX": "_without_scatterplots",
+            "OPEN_BROWSER": False,
+        },
+    )
+
+    time.sleep(5)
     print("\nFinished running all scripts.")
 
 
     print("\nSend EMAIL with html report...")
 
-    html_file_path = report_path(f"PV_forecast_risk_ICON1_{START_DATE}_to_{END_DATE}.html")
+    html_file_paths = [
+        report_path(f"GHI_forecast_risk_ICON1_{START_DATE}_to_{END_DATE}_with_scatterplots.html"),
+        report_path(f"GHI_forecast_risk_ICON1_{START_DATE}_to_{END_DATE}_without_scatterplots.html"),
+    ]
 
     send_html_report_email(
         to_address=EMAIL_TO,
-        html_file_path=html_file_path,
+        html_file_path=html_file_paths,
     )
 
     print(f"\nSuccessfully sent email to {EMAIL_TO}")
@@ -156,25 +176,27 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    
     zurich_tz = ZoneInfo("Europe/Zurich")
-    last_successful_run_date = None
+    last_successful_run_date = date(2026, 5, 14)
 
     print("Waiting for 08:00 Europe/Zurich time...")
 
     while True:
         now = datetime.now(zurich_tz)
         # print(now.hour, now.minute)
-        
+
         # Start trying from 08:00 onward, once per day until successful
         if (now.hour >= 8 and last_successful_run_date != now.date()):
             print(f"\nIt is {now.strftime('%Y-%m-%d %H:%M:%S %Z')}. Starting daily run...")
-            
+
             try:
                 run_pipeline()
+
                 # Only mark the day as done if the full pipeline succeeded
                 last_successful_run_date = now.date()
+
                 print("\nDaily run finished successfully.")
+
             except Exception as e:
                 print(f"\nDaily run failed: {e}")
                 print("Will retry in 30 seconds...")

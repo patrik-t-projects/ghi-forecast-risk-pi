@@ -184,7 +184,7 @@ if os.path.exists(FAILED_ENSEMBLE_RUNS_PATH):
     failed_ensemble_runs = pd.read_csv(FAILED_ENSEMBLE_RUNS_PATH)
 
     if not failed_ensemble_runs.empty:
-        print(f"Retrying ensemble runs for {len(failed_ensemble_runs)} failed stations", flush=True)
+        print(f"ðŸ” Retrying ensemble runs for {len(failed_ensemble_runs)} failed stations", flush=True)
 
         retry_plants_ens_runs = (plants.merge(failed_ensemble_runs[["station_abbr"]], on="station_abbr", how="inner"))
 
@@ -216,7 +216,7 @@ if os.path.exists(FAILED_ENSEMBLE_MEAN_PATH):
     failed_ensemble_mean = pd.read_csv(FAILED_ENSEMBLE_MEAN_PATH)
 
     if not failed_ensemble_mean.empty:
-        print(f"Retrying ensemble mean for {len(failed_ensemble_mean)} failed stations", flush=True)
+        print(f"ðŸ” Retrying ensemble mean for {len(failed_ensemble_mean)} failed stations", flush=True)
 
         retry_plants_ens_mean = (plants.merge(failed_ensemble_mean[["station_abbr"]], on="station_abbr", how="inner"))
 
@@ -246,7 +246,7 @@ if os.path.exists(FAILED_PREV_PATH):
     failed_prev = pd.read_csv(FAILED_PREV_PATH)
 
     if not failed_prev.empty:
-        print(f"Retrying previous-run weather for {len(failed_prev)} failed stations", flush=True)
+        print(f"ðŸ” Retrying previous-run weather for {len(failed_prev)} failed stations", flush=True)
 
         retry_plants_prev = plants.merge(failed_prev[["station_abbr"]], on="station_abbr", how="inner")
 
@@ -289,18 +289,18 @@ for name, df in [("ENSEMBLE-RUNS", df_ensemble_runs), ("ENSEMBLE-MEAN", df_ensem
     print(f"Stations found    : {len(found_stations)}")
 
     if missing:
-        print(f"Warning: Missing stations ({len(missing)}): {sorted(missing)}")
+        print(f"âš ï¸ Missing stations ({len(missing)}): {sorted(missing)}")
     else:
-        print("No missing stations")
+        print("âœ… No missing stations")
 
     ranges = df.groupby("station_abbr")["Datetime"].agg(start="min", end="max").reset_index()
 
     incomplete = ranges[(ranges["start"] > expected_start) | (ranges["end"] < expected_end)]
 
     if incomplete.empty:
-        print("All stations have full date coverage")
+        print("âœ… All stations have full date coverage")
     else:
-        print(f"Warning: Incomplete date coverage ({len(incomplete)} stations):")
+        print(f"âš ï¸ Incomplete date coverage ({len(incomplete)} stations):")
         print(incomplete.sort_values("station_abbr").to_string(index=False))
 # End completeness check
 
