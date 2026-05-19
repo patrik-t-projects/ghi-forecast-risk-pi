@@ -17,6 +17,7 @@ Each scheduled run does this:
 6. Runs `GHI_forecast_risk_plot_html.py` twice:
    - one report with scatterplots
    - one report without scatterplots
+   An example report can be found here: https://patrik-t-projects.github.io/ghi-forecast-risk-pi/GHI_forecast_risk_example.html
 7. Sends both HTML reports in one email.
 
 The scheduler runs at `06:00`, `09:00`, and `12:00` Europe/Zurich time. A failed slot is retried every 30 seconds until it succeeds.
