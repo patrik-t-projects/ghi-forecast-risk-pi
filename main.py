@@ -62,48 +62,41 @@ def run_pipeline():
     # ==============================================
     print("\nRunning API_OpenMeteo_WeatherStations.py...")
 
-    last_date = old["Datetime"].max().date()
-    up_to_date = date.today() + timedelta(days=5)
+    START_DATE = date.today().isoformat()
+    END_DATE = (date.today() + timedelta(days=5)).isoformat()
 
-    if last_date >= up_to_date:
-        print("OpenMeteo data is already up to date. Skipping API call.")
-        updated = old
-    else:
-        START_DATE = date.today().isoformat()
-        END_DATE = (date.today() + timedelta(days=5)).isoformat()
+    output_stem = f"Data_OpenMeteo_ENSEMBLE_PrevRuns_weather_stations_{START_DATE}_{END_DATE}"
+    globals_dict = {
+        "START_DATE": START_DATE,
+        "END_DATE": END_DATE,
+        "OUTPUT_FILE": output_stem,
+    }
 
-        output_stem = f"Data_OpenMeteo_ENSEMBLE_PrevRuns_weather_stations_{START_DATE}_{END_DATE}"
-        globals_dict = {
-            "START_DATE": START_DATE,
-            "END_DATE": END_DATE,
-            "OUTPUT_FILE": output_stem,
-        }
+    print(f"Existing data range: {old['Datetime'].min()} to {old['Datetime'].max()}")
+    print(f"Refreshing OpenMeteo data from {START_DATE} to {END_DATE}")
 
-        print(f"Existing data range: {old['Datetime'].min()} to {old['Datetime'].max()}")
-        print(f"Fetching new data from {START_DATE} to {END_DATE}")
+    runpy.run_path(str(script_path("API_OpenMeteo_WeatherStations.py")), init_globals=globals_dict)
 
-        runpy.run_path(str(script_path("API_OpenMeteo_WeatherStations.py")), init_globals=globals_dict)
-            
 
-        # ==============================================
-        # Append new OpenMeteo data to full 2026 file
-        # ==============================================
-        new_path = data_path(f"{output_stem}.csv")
+    # ==============================================
+    # Append new OpenMeteo data to full 2026 file
+    # ==============================================
+    new_path = data_path(f"{output_stem}.csv")
 
-        new = pd.read_csv(new_path, sep=";")
-        new["Datetime"] = pd.to_datetime(new["Datetime"])
+    new = pd.read_csv(new_path, sep=";")
+    new["Datetime"] = pd.to_datetime(new["Datetime"])
 
-        start_dt = pd.to_datetime(START_DATE)
-        end_dt = pd.to_datetime(END_DATE) + pd.Timedelta(days=1)
-        new = new[(new["Datetime"] >= start_dt) & (new["Datetime"] < end_dt)].copy()
+    start_dt = pd.to_datetime(START_DATE)
+    end_dt = pd.to_datetime(END_DATE) + pd.Timedelta(days=1)
+    new = new[(new["Datetime"] >= start_dt) & (new["Datetime"] < end_dt)].copy()
 
-        updated = pd.concat([old, new], ignore_index=True)
-        updated = updated.drop_duplicates(subset=["station_abbr", "Datetime"], keep="last")
-        updated = updated.sort_values(["station_abbr", "Datetime"]).reset_index(drop=True)
-        updated.to_csv(OPEN_METEO_FULL_FILE, sep=";", index=False, encoding="utf-8")
+    updated = pd.concat([old, new], ignore_index=True)
+    updated = updated.drop_duplicates(subset=["station_abbr", "Datetime"], keep="last")
+    updated = updated.sort_values(["station_abbr", "Datetime"]).reset_index(drop=True)
+    updated.to_csv(OPEN_METEO_FULL_FILE, sep=";", index=False, encoding="utf-8")
 
-        print(f"Updated full 2026 file saved to: {OPEN_METEO_FULL_FILE}")
-        print(f"New date range: {updated['Datetime'].min()} to {updated['Datetime'].max()}")
+    print(f"Updated full 2026 file saved to: {OPEN_METEO_FULL_FILE}")
+    print(f"New date range: {updated['Datetime'].min()} to {updated['Datetime'].max()}")
 
 
     # ==============================================
@@ -121,6 +114,17 @@ def run_pipeline():
         str(script_path("PV_Forecast_uncertainty_calc.py")),
         init_globals={"START_DATE": START_DATE, "END_DATE": END_DATE},
     )
+
+    # ==============================================
+    # Run GHI_forecast_risk_model_calc
+    # ==============================================
+    print("\nRunning GHI_forecast_risk_model_calc.py...")
+
+    runpy.run_path(
+        str(script_path("GHI_forecast_risk_model_calc.py")),
+        run_name="__main__",
+    )
+
 
     # ==============================================
     # Run GHI_forecast_risk_plot_html
@@ -177,28 +181,42 @@ def run_pipeline():
 
 if __name__ == "__main__":
     zurich_tz = ZoneInfo("Europe/Zurich")
-    last_successful_run_date = date(2026, 5, 14)
+    run_slots = [
+        ("06:00", 6),
+        ("09:00", 9),
+        ("12:00", 12),
+    ]
+    successful_runs = set()
 
-    print("Waiting for 08:00 Europe/Zurich time...")
+    print("Waiting for 06:00, 09:00 and 12:00 Europe/Zurich time...")
 
     while True:
         now = datetime.now(zurich_tz)
-        # print(now.hour, now.minute)
+        successful_runs = {
+            run_key
+            for run_key in successful_runs
+            if run_key[0] == now.date()
+        }
 
-        # Start trying from 08:00 onward, once per day until successful
-        if (now.hour >= 8 and last_successful_run_date != now.date()):
-            print(f"\nIt is {now.strftime('%Y-%m-%d %H:%M:%S %Z')}. Starting daily run...")
+        for slot_label, slot_hour in run_slots:
+            run_key = (now.date(), slot_label)
 
-            try:
-                run_pipeline()
+            # Start trying from the slot time onward, once per slot until successful
+            if now.hour >= slot_hour and run_key not in successful_runs:
+                print(f"\nIt is {now.strftime('%Y-%m-%d %H:%M:%S %Z')}. Starting {slot_label} run...")
 
-                # Only mark the day as done if the full pipeline succeeded
-                last_successful_run_date = now.date()
+                try:
+                    run_pipeline()
 
-                print("\nDaily run finished successfully.")
+                    # Only mark this slot as done if the full pipeline succeeded
+                    successful_runs.add(run_key)
 
-            except Exception as e:
-                print(f"\nDaily run failed: {e}")
-                print("Will retry in 30 seconds...")
+                    print(f"\n{slot_label} run finished successfully.")
+
+                except Exception as e:
+                    print(f"\n{slot_label} run failed: {e}")
+                    print("Will retry in 30 seconds...")
+
+                break
 
         time.sleep(30)
